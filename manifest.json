@@ -6,8 +6,8 @@
   "js": "index.js",
   "css": "style.css",
   "author": "SillyTavern Specialist",
-  "version": "1.0.2",
-  "description": "自动或手动提取角色回复中的英文原声台词与中文翻译，支持廉价大模型提取与正则双模式，调用 MiniMax 顺序合成并排队播放。",
+  "version": "1.0.3",
+  "description": "修正中英双语台词正则匹配，支持引号内外括号翻译；新增指定角色筛选朗读。支持 AI/正则提取与 MiniMax 顺序语音播放。",
   "hooks": {
     "activate": "init"
   }

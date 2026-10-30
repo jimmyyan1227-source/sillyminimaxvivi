@@ -22,6 +22,12 @@
       </div>
 
       <div class="bilingual-form-group">
+        <label><b>只朗读指定角色（留空 = 朗读全部角色）：</b></label>
+        <input type="text" id="bilingual-speaker-filter" class="text_pole" placeholder="输入角色名，例如：Mortimer / 莫蒂默" />
+        <small class="notes">支持输入完整姓名或部分姓名；按聊天楼层中的角色名及 AI 提取到的角色名筛选。群像聊天时可填写你想听的那一位。</small>
+      </div>
+
+      <div class="bilingual-form-group">
         <label><b>朗读目标语言：</b></label>
         <select id="bilingual-read-target" class="text_pole">
           <option value="english">仅朗读英文原话 (English Only)</option>
@@ -80,9 +86,9 @@
       <div class="bilingual-section" id="bilingual-regex-config-section">
         <h4 style="margin: 8px 0; color: #6ee7b7;">🔍 正则表达式配置</h4>
         <div class="bilingual-form-group">
-          <label>台词与翻译匹配正则 (Group 1: 英文, Group 2: 中文):</label>
-          <input type="text" id="bilingual-regex-pattern" class="text_pole" value='["“]([^"”]+)["”]\s*[（\(]([^\)）]+)[\)）]' />
-          <small class="notes">默认匹配格式如：<code>"Hello detective." (你好，侦探。)</code> 或 <code>“Welcome!”（欢迎！）</code></small>
+          <label>台词与翻译匹配规则：</label>
+          <input type="text" id="bilingual-regex-pattern" class="text_pole" value='["“]([\s\S]*?)(?:\s*[（(]([^()（）]+)[）)])?["”]\s*(?:[（(]([^()（）]+)[）)])?' />
+          <small class="notes">现在同时支持：<code>"Hello detective." (你好，侦探。)</code>、<code>"Hello detective. (你好，侦探。)"</code>，以及中文引号和中文括号。第 1 组为英文，第 2 / 3 组为中文翻译。</small>
         </div>
       </div>
 

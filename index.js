@@ -12,6 +12,9 @@ import { saveSettingsDebounced } from '../../../../script.js';
 
 const MODULE_NAME = 'bilingual_minimax_tts';
 
+// 旧版默认正则：升级时自动迁移，避免已保存的旧设置覆盖新版匹配规则。
+const LEGACY_REGEX_PATTERN = '["“]([^"”]+)["”]\\s*[（\\(]([^\\)）]+)[\\)）]';
+
 // 动态获取当前扩展所在的文件夹名称 (兼容 GitHub Clone 任意仓库名)
 const EXTENSION_DIR = (() => {
   try {
@@ -46,7 +49,8 @@ const DEFAULT_SETTINGS = {
   ai_custom_prompt: DEFAULT_AI_PROMPT,
   fallback_to_regex: true, // AI 失败时自动使用正则兜底
   // 正则模式配置
-  regex_pattern: '["“]([^"”]+)["”]\\s*[（\\(]([^\\)）]+)[\\)）]',
+  regex_pattern: '["“]([\\s\\S]*?)(?:\\s*[（(]([^()（）]+)[）)])?["”]\\s*(?:[（(]([^()（）]+)[）)])?',
+  speaker_filter: '', // 指定朗读角色；留空时朗读所有角色
   // MiniMax TTS 配置
   minimax_api_key: '',
   minimax_group_id: '',
@@ -78,6 +82,9 @@ export async function init() {
 
   // 初始化设置
   extension_settings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, extension_settings[MODULE_NAME]);
+  if (extension_settings[MODULE_NAME].regex_pattern === LEGACY_REGEX_PATTERN) {
+    extension_settings[MODULE_NAME].regex_pattern = DEFAULT_SETTINGS.regex_pattern;
+  }
 
   // 创建单例 Audio 对象
   if (!playQueue.audioElement) {
@@ -323,6 +330,23 @@ export async function processMessage(messageId, triggerBtn = null) {
     return;
   }
 
+  // 只保留用户指定角色的台词。留空时保持原行为：朗读本楼所有提取结果。
+  const speakerFilter = normalizeSpeakerName(settings.speaker_filter);
+  if (speakerFilter) {
+    const extractedCount = lines.length;
+    lines = lines.filter((line) => {
+      const extractedSpeaker = String(line.character || '').trim();
+      const isGenericSpeaker = !extractedSpeaker || /^(character|unknown|speaker|角色|未知)$/i.test(extractedSpeaker);
+      const speakerName = isGenericSpeaker ? (message.name || extractedSpeaker) : extractedSpeaker;
+      return speakerNameMatches(speakerName, speakerFilter);
+    });
+
+    if (lines.length === 0) {
+      showToast(`本楼没有匹配“${settings.speaker_filter.trim()}”的角色台词（已提取 ${extractedCount} 句）`, 'info');
+      return;
+    }
+  }
+
   console.log(`[${MODULE_NAME}] Extracted ${lines.length} dialog lines:`, lines);
   showToast(`成功提取 ${lines.length} 句台词，开始排队合成与朗读`, 'success');
 
@@ -403,37 +427,53 @@ export async function extractWithAI(rawText, defaultCharName = 'Character') {
  */
 export function extractWithRegex(rawText, defaultCharName = 'Character') {
   const lines = [];
+  const settings = extension_settings[MODULE_NAME] || DEFAULT_SETTINGS;
+  const pattern = settings.regex_pattern || DEFAULT_SETTINGS.regex_pattern;
+  let regex;
 
-  // 支持英文引号 "..." 与中文双引号 “...”
-  // 紧随其后的英文括号 (...) 或中文括号（...）
-  const regex = /["“]([^"”]+)["”]\s*[（\(]([^\)）]+)[\)）]/g;
+  try {
+    regex = new RegExp(pattern, 'g');
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] 自定义正则无效，改用内置默认规则:`, error);
+    regex = new RegExp(DEFAULT_SETTINGS.regex_pattern, 'g');
+  }
 
   let match;
   while ((match = regex.exec(rawText)) !== null) {
-    const speech = match[1].trim();
-    const translation = match[2].trim();
+    const speech = String(match[1] || '').trim();
+    // Group 2 是引号内部括号中的翻译；Group 3 是引号外部括号中的翻译。
+    const translation = String(match[2] || match[3] || '').trim();
 
-    // 简单判断哪部分是英文/中文
-    const hasEnglishInQuote = /[a-zA-Z]{2,}/.test(speech);
-    const hasChineseInBracket = /[\u4e00-\u9fa5]/.test(translation);
+    // 没有匹配到翻译括号时跳过，避免把纯旁白或普通引号内容误当成双语台词。
+    if (!speech || !translation) continue;
 
-    if (hasEnglishInQuote && hasChineseInBracket) {
-      lines.push({
-        character: defaultCharName,
-        english: speech,
-        chinese: translation,
-      });
-    } else {
-      // 容错：如果两边都有内容直接保留
-      lines.push({
-        character: defaultCharName,
-        english: speech,
-        chinese: translation,
-      });
-    }
+    // 仅接受确实含有中文的翻译，避免将普通英文括号误识别为中文翻译。
+    if (!/[\u4e00-\u9fff]/.test(translation)) continue;
+
+    lines.push({
+      character: defaultCharName,
+      english: speech,
+      chinese: translation,
+    });
   }
 
   return lines;
+}
+
+/**
+ * 规范化角色名：忽略大小写、空格及常见姓名分隔符，便于输入部分名字筛选。
+ */
+function normalizeSpeakerName(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[\s·•._-]/g, '');
+}
+
+/**
+ * 支持完整名称或部分名称匹配，例如输入 Mortimer 可匹配 Mortimer Lasmodis。
+ */
+function speakerNameMatches(name, filter) {
+  const normalizedName = normalizeSpeakerName(name);
+  if (!normalizedName || !filter) return false;
+  return normalizedName.includes(filter) || filter.includes(normalizedName);
 }
 
 /**
@@ -826,6 +866,7 @@ function bindSettingsEvents() {
   bindInput('bilingual-minimax-speed', 'minimax_speed');
   bindInput('bilingual-minimax-vol', 'minimax_vol');
   bindInput('bilingual-read-target', 'read_target');
+  bindInput('bilingual-speaker-filter', 'speaker_filter');
   bindInput('bilingual-show-subtitle', 'show_subtitle', true);
 }
 
