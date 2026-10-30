@@ -66,6 +66,11 @@ const DEFAULT_SETTINGS = {
 };
 
 // 播放队列状态
+const processingMessages = new Set();
+const processedMessageLines = new Map();
+const audioCache = new Map();
+const diagnosticEntries = [];
+
 const playQueue = {
   items: [],
   currentIndex: -1,
@@ -119,7 +124,7 @@ export async function init() {
       const message = context.chat?.[messageId];
       if (message && !message.is_user) {
         console.log(`[${MODULE_NAME}] Auto-processing message #${messageId}`);
-        await processMessage(messageId);
+        try { await processMessage(messageId); } catch (err) { logDiagnostic(`自动处理楼层 ${messageId} 失败`, err.message || String(err), 'error'); showToast(`自动朗读失败：${err.message || err}`, 'error'); }
       }
     }
   });
@@ -161,43 +166,48 @@ function scanExistingMessages() {
 }
 
 /**
- * 在角色回复楼层右上角添加【🔊 朗读台词】按钮
+ * 在每条角色消息左上角添加紧凑的扬声器图标。
  */
 export function addFloorButton(messageId) {
   const mes = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
   if (!mes || mes.getAttribute('is_user') === 'true') return;
-
-  // 检查是否已注入
   if (mes.querySelector('.bilingual-tts-floor-btn')) return;
 
-  // 寻找合适挂载点：楼层右上角消息控制区或直接绝对定位在楼层右上角
   const btn = document.createElement('button');
+  btn.type = 'button';
   btn.className = 'bilingual-tts-floor-btn';
-  btn.title = '提取本楼台词并调用 MiniMax TTS 朗读';
-  btn.innerHTML = `<span class="bilingual-tts-icon">🔊</span><span class="bilingual-tts-text">朗读台词</span>`;
+  btn.title = '提取并朗读本楼层台词';
+  btn.setAttribute('aria-label', '朗读本楼层台词');
+  btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3z"></path><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"></path></svg>';
 
   btn.addEventListener('click', async (e) => {
+    e.preventDefault();
     e.stopPropagation();
+    if (processingMessages.has(String(messageId))) {
+      showToast('这一层正在处理中，请稍候', 'info');
+      return;
+    }
+    btn.disabled = true;
     btn.classList.add('bilingual-tts-loading');
-    btn.innerHTML = `<span class="bilingual-tts-spinner">⏳</span><span class="bilingual-tts-text">提取中...</span>`;
+    btn.title = '正在提取与合成…';
     try {
       await processMessage(messageId, btn);
     } catch (err) {
       console.error(`[${MODULE_NAME}] Manual trigger error:`, err);
-      showToast(`朗读失败: ${err.message}`, 'error');
+      logDiagnostic('楼层处理失败', err.message || String(err), 'error');
+      showToast(`本楼处理失败：${err.message || err}`, 'error');
     } finally {
+      btn.disabled = false;
       btn.classList.remove('bilingual-tts-loading');
-      btn.innerHTML = `<span class="bilingual-tts-icon">🔊</span><span class="bilingual-tts-text">朗读台词</span>`;
+      const currentMessage = getContext().chat?.[messageId];
+      const cacheKey = `${messageId}::${currentMessage?.mes || currentMessage?.text || ''}::${extension_settings[MODULE_NAME].speaker_filter || ''}`;
+      btn.classList.toggle('bilingual-tts-done', processedMessageLines.has(cacheKey));
+      btn.title = processedMessageLines.has(cacheKey) ? '已提取过；再次点击可播放缓存台词' : '提取并朗读本楼层台词';
     }
   });
 
-  // 注入到楼层顶部
-  const nameElement = mes.querySelector('.name_text') || mes.querySelector('.ch_name');
-  if (nameElement && nameElement.parentElement) {
-    nameElement.parentElement.appendChild(btn);
-  } else {
-    mes.appendChild(btn);
-  }
+  const header = mes.querySelector('.mes_header') || mes.querySelector('.mes_block .mes_header') || mes;
+  header.appendChild(btn);
 }
 
 /**
@@ -290,68 +300,75 @@ function injectSubtitleOverlay() {
  * 核心流程：处理单楼层消息
  */
 export async function processMessage(messageId, triggerBtn = null) {
-  const context = getContext();
-  const message = context.chat?.[messageId];
-  if (!message) {
-    throw new Error('未找到该消息楼层数据');
-  }
-
-  const rawText = message.mes || message.text || '';
-  if (!rawText.trim()) {
-    showToast('消息文本为空', 'warning');
+  const id = String(messageId);
+  if (processingMessages.has(id)) {
+    showToast('这一层已经在处理中，请勿重复点击', 'info');
     return;
   }
+  processingMessages.add(id);
+  try {
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    if (!message) throw new Error('未找到该消息楼层数据（可能聊天记录已刷新）');
 
-  const settings = extension_settings[MODULE_NAME];
+    const rawText = message.mes || message.text || '';
+    if (!rawText.trim()) throw new Error('本楼消息文本为空，无法提取');
 
-  // 1. 台词提取
-  let lines = [];
-  if (settings.extract_mode === 'ai') {
-    if (triggerBtn) triggerBtn.querySelector('.bilingual-tts-text').textContent = 'AI 提取中...';
-    try {
-      lines = await extractWithAI(rawText, message.name || 'Character');
-    } catch (err) {
-      console.warn(`[${MODULE_NAME}] AI 提取失败:`, err);
-      if (settings.fallback_to_regex) {
-        showToast('AI 提取失败，自动使用正则纯提取兜底', 'warning');
-        lines = extractWithRegex(rawText, message.name || 'Character');
+    const settings = extension_settings[MODULE_NAME];
+    const messageCacheKey = `${id}::${rawText}::${settings.speaker_filter || ''}`;
+    let lines = processedMessageLines.get(messageCacheKey);
+    if (lines?.length) {
+      logDiagnostic(`楼层 ${id}`, '命中提取缓存，跳过重复 AI/API 提取');
+      showToast('已使用本楼缓存台词，不重复请求提取 API', 'info');
+    } else {
+      if (settings.extract_mode === 'ai') {
+        if (triggerBtn) triggerBtn.title = 'AI 正在提取台词…';
+        try {
+          lines = await extractWithAI(rawText, message.name || 'Character');
+          if (!lines.length) throw new Error('AI 已返回结果，但没有提取到有效英文/中文台词');
+          logDiagnostic(`楼层 ${id} · AI 提取`, `成功提取 ${lines.length} 句`);
+        } catch (err) {
+          logDiagnostic(`楼层 ${id} · AI 提取失败`, err.message || String(err), 'error');
+          if (settings.fallback_to_regex) {
+            showToast(`AI 提取失败，尝试正则兜底：${err.message}`, 'warning');
+            lines = extractWithRegex(rawText, message.name || 'Character');
+            if (!lines.length) throw new Error(`AI 提取失败且正则兜底无结果。原因：${err.message}`);
+            logDiagnostic(`楼层 ${id} · 正则兜底`, `提取到 ${lines.length} 句`);
+          } else {
+            throw err;
+          }
+        }
       } else {
-        throw err;
+        if (triggerBtn) triggerBtn.title = '正则正在提取台词…';
+        lines = extractWithRegex(rawText, message.name || 'Character');
+        if (!lines.length) throw new Error('正则没有匹配到双语台词，请检查引号、括号翻译格式或正则规则');
+        logDiagnostic(`楼层 ${id} · 正则提取`, `成功提取 ${lines.length} 句`);
       }
+
+      const speakerFilter = normalizeSpeakerName(settings.speaker_filter);
+      if (speakerFilter) {
+        const extractedCount = lines.length;
+        lines = lines.filter((line) => {
+          const extractedSpeaker = String(line.character || '').trim();
+          const isGenericSpeaker = !extractedSpeaker || /^(character|unknown|speaker|角色|未知)$/i.test(extractedSpeaker);
+          const speakerName = isGenericSpeaker ? (message.name || extractedSpeaker) : extractedSpeaker;
+          return speakerNameMatches(speakerName, speakerFilter);
+        });
+        if (!lines.length) throw new Error(`提取到 ${extractedCount} 句，但没有匹配指定角色“${settings.speaker_filter.trim()}”的台词`);
+      }
+      processedMessageLines.set(messageCacheKey, lines);
     }
-  } else {
-    // 纯正则模式
-    if (triggerBtn) triggerBtn.querySelector('.bilingual-tts-text').textContent = '正则提取中...';
-    lines = extractWithRegex(rawText, message.name || 'Character');
+
+    if (!lines?.length) throw new Error('没有可供朗读的台词');
+    logDiagnostic(`楼层 ${id}`, `准备播放 ${lines.length} 句`);
+    showToast(`成功提取 ${lines.length} 句台词，开始朗读`, 'success');
+    enqueueLines(lines, messageId);
+  } catch (err) {
+    logDiagnostic(`楼层 ${id} 处理失败`, err.message || String(err), 'error');
+    throw err;
+  } finally {
+    processingMessages.delete(id);
   }
-
-  if (!lines || lines.length === 0) {
-    showToast('未检测到符合条件的双语台词', 'info');
-    return;
-  }
-
-  // 只保留用户指定角色的台词。留空时保持原行为：朗读本楼所有提取结果。
-  const speakerFilter = normalizeSpeakerName(settings.speaker_filter);
-  if (speakerFilter) {
-    const extractedCount = lines.length;
-    lines = lines.filter((line) => {
-      const extractedSpeaker = String(line.character || '').trim();
-      const isGenericSpeaker = !extractedSpeaker || /^(character|unknown|speaker|角色|未知)$/i.test(extractedSpeaker);
-      const speakerName = isGenericSpeaker ? (message.name || extractedSpeaker) : extractedSpeaker;
-      return speakerNameMatches(speakerName, speakerFilter);
-    });
-
-    if (lines.length === 0) {
-      showToast(`本楼没有匹配“${settings.speaker_filter.trim()}”的角色台词（已提取 ${extractedCount} 句）`, 'info');
-      return;
-    }
-  }
-
-  console.log(`[${MODULE_NAME}] Extracted ${lines.length} dialog lines:`, lines);
-  showToast(`成功提取 ${lines.length} 句台词，开始排队合成与朗读`, 'success');
-
-  // 2. 压入 MiniMax 语音播放队列
-  enqueueLines(lines, messageId);
 }
 
 /**
@@ -391,10 +408,12 @@ export async function extractWithAI(rawText, defaultCharName = 'Character') {
     throw new Error(`AI API 错误 (${response.status}): ${errorText.slice(0, 200)}`);
   }
 
-  const data = await response.json();
+  let data;
+  try { data = await response.json(); } catch (error) { throw new Error('AI API 返回的不是有效 JSON；请检查接口地址及服务商响应格式'); }
+  if (data.error) throw new Error(`AI API 返回错误：${data.error.message || JSON.stringify(data.error).slice(0, 180)}`);
   const content = data.choices?.[0]?.message?.content?.trim();
   if (!content) {
-    throw new Error('AI 返回内容为空');
+    throw new Error(`AI API 未提取到文本内容（HTTP 请求成功，但 choices[0].message.content 为空）。响应字段：${Object.keys(data || {}).join(', ') || '无'}`);
   }
 
   // 清洗可能存在的 Markdown ```json 语法块
@@ -520,7 +539,8 @@ export async function requestMiniMaxTTS(textToRead) {
     throw new Error(`MiniMax HTTP 错误 (${response.status}): ${errorText.slice(0, 200)}`);
   }
 
-  const data = await response.json();
+  let data;
+  try { data = await response.json(); } catch (error) { throw new Error('MiniMax 返回内容不是有效 JSON'); }
   if (data.base_resp && data.base_resp.status_code !== 0) {
     throw new Error(`MiniMax 错误 [${data.base_resp.status_code}]: ${data.base_resp.status_msg}`);
   }
@@ -641,7 +661,9 @@ export async function playNextInQueue() {
     currentItem.status = 'synthesizing';
     // 若未缓存音频 URL，发起合成请求
     if (!currentItem.audioUrl) {
-      currentItem.audioUrl = await requestMiniMaxTTS(currentItem.speechText);
+      const cacheKey = `${extension_settings[MODULE_NAME].minimax_voice_id}|${extension_settings[MODULE_NAME].minimax_model}|${currentItem.speechText}`;
+      currentItem.audioUrl = audioCache.get(cacheKey) || await requestMiniMaxTTS(currentItem.speechText);
+      audioCache.set(cacheKey, currentItem.audioUrl);
     }
 
     currentItem.status = 'playing';
@@ -652,6 +674,7 @@ export async function playNextInQueue() {
     await playQueue.audioElement.play();
   } catch (err) {
     console.error(`[${MODULE_NAME}] Playback error at item #${playQueue.currentIndex}:`, err);
+    logDiagnostic('MiniMax 合成 / 音频播放失败', err.message || String(err), 'error');
     currentItem.status = 'error';
     currentItem.error = err.message;
     showToast(`台词合成失败: ${err.message}`, 'error');
@@ -690,6 +713,7 @@ function onAudioEnded() {
  */
 function onAudioError(e) {
   console.error(`[${MODULE_NAME}] HTML5 Audio error:`, e);
+  logDiagnostic('浏览器音频播放失败', '音频元素触发 error 事件；请检查返回音频、网络或浏览器播放权限', 'error');
   showToast('音频播放异常，跳到下一句', 'warning');
   setTimeout(() => playNextInQueue(), 1000);
 }
@@ -831,6 +855,7 @@ export function toggleDrawerSettings() {
  */
 function bindSettingsEvents() {
   const settings = extension_settings[MODULE_NAME];
+  renderDiagnostics();
 
   const bindInput = (id, key, isCheckbox = false) => {
     const el = document.getElementById(id);
@@ -840,13 +865,17 @@ function bindSettingsEvents() {
       el.addEventListener('change', () => {
         settings[key] = el.checked;
         saveSettingsDebounced();
+        setSaveStatus('已自动保存');
       });
     } else {
-      el.value = settings[key] || '';
-      el.addEventListener('input', () => {
-        settings[key] = el.value;
+      el.value = settings[key] ?? '';
+      const updateValue = () => {
+        settings[key] = el.type === 'number' ? Number(el.value) : el.value;
         saveSettingsDebounced();
-      });
+        setSaveStatus('已自动保存');
+      };
+      el.addEventListener('input', updateValue);
+      el.addEventListener('change', updateValue);
     }
   };
 
@@ -868,6 +897,50 @@ function bindSettingsEvents() {
   bindInput('bilingual-read-target', 'read_target');
   bindInput('bilingual-speaker-filter', 'speaker_filter');
   bindInput('bilingual-show-subtitle', 'show_subtitle', true);
+
+  const saveBtn = document.getElementById('bilingual-save-settings');
+  if (saveBtn) saveBtn.addEventListener('click', () => {
+    // 强制从当前表单再收集一次，避免输入框尚未触发 change/input 时漏存。
+    document.querySelectorAll('#bilingual-tts-extension-settings-wrapper [id^=\"bilingual-\"]').forEach((el) => {
+      const key = ({
+        'bilingual-enabled':'enabled','bilingual-auto-play':'auto_play','bilingual-extract-mode':'extract_mode',
+        'bilingual-ai-url':'ai_api_url','bilingual-ai-key':'ai_api_key','bilingual-ai-model':'ai_model','bilingual-ai-prompt':'ai_custom_prompt',
+        'bilingual-fallback-regex':'fallback_to_regex','bilingual-regex-pattern':'regex_pattern','bilingual-minimax-key':'minimax_api_key',
+        'bilingual-minimax-group':'minimax_group_id','bilingual-minimax-model':'minimax_model','bilingual-minimax-voice':'minimax_voice_id',
+        'bilingual-minimax-speed':'minimax_speed','bilingual-minimax-vol':'minimax_vol','bilingual-read-target':'read_target',
+        'bilingual-speaker-filter':'speaker_filter','bilingual-show-subtitle':'show_subtitle'
+      })[el.id];
+      if (key) settings[key] = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value);
+    });
+    saveSettingsDebounced();
+    setSaveStatus('配置已保存；重新打开酒馆后会自动读取');
+    showToast('插件配置已保存', 'success');
+    logDiagnostic('配置保存', '用户手动保存全部设置');
+  });
+}
+
+function setSaveStatus(message) {
+  const el = document.getElementById('bilingual-save-status');
+  if (el) el.textContent = message;
+}
+
+function renderDiagnostics() {
+  const list = document.getElementById('bilingual-diagnostics');
+  if (!list) return;
+  if (!diagnosticEntries.length) { list.innerHTML = '<div class=\"bilingual-log-empty\">暂无运行记录</div>'; return; }
+  list.innerHTML = diagnosticEntries.map((item) => `<div class=\"bilingual-log-entry ${item.level}\"><time>${escapeHtml(item.time)}</time><b>${escapeHtml(item.title)}</b><span>${escapeHtml(item.detail)}</span></div>`).join('');
+}
+
+function logDiagnostic(title, detail, level = 'info') {
+  const entry = { time: new Date().toLocaleTimeString(), title, detail: String(detail || ''), level };
+  diagnosticEntries.unshift(entry);
+  if (diagnosticEntries.length > 30) diagnosticEntries.length = 30;
+  console[level === 'error' ? 'error' : 'log'](`[${MODULE_NAME}] ${title}: ${detail}`);
+  renderDiagnostics();
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>\"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char]));
 }
 
 /**
