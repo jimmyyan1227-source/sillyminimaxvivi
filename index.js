@@ -102,9 +102,8 @@ export async function init() {
   await loadStyles();
   await initSettingsUI();
 
-  // 注入底部栏快捷按钮（兼容酒馆不同版本的输入栏结构）
-  injectBottomBarButton();
-  observeBottomBar();
+  // 清理旧版本遗留的底部 TTS 快捷入口；设置仍可从酒馆扩展设置面板打开。
+  document.getElementById('bilingual-tts-bottom-launcher')?.remove();
 
   // 注入字幕条
   injectSubtitleOverlay();
@@ -134,8 +133,9 @@ export async function init() {
     addFloorButton(messageId);
   });
 
-  // 3. 初始扫描当前界面已有消息
+  // 3. 初始扫描并持续监听聊天楼层（避免消息异步渲染后漏掉图标）
   scanExistingMessages();
+  observeChatMessages();
 
   console.log(`[${MODULE_NAME}] Extension loaded successfully.`);
 }
@@ -153,25 +153,51 @@ async function loadStyles() {
 }
 
 /**
- * 扫描页面现有楼层并追加按钮
+ * 扫描页面现有楼层并追加按钮。
+ * SillyTavern 有时会在扩展 init 之后才把聊天消息挂载到 #chat，
+ * 因此不能只依赖一次性扫描或单一事件。
  */
 function scanExistingMessages() {
   const messages = document.querySelectorAll('#chat .mes:not([is_user="true"])');
   messages.forEach((mes) => {
     const messageId = mes.getAttribute('mesid');
-    if (messageId !== null) {
-      addFloorButton(messageId);
-    }
+    if (messageId !== null && messageId !== '') addFloorButton(messageId);
   });
 }
 
+let chatMutationObserver = null;
+function observeChatMessages() {
+  if (chatMutationObserver || !document.body) return;
+  chatMutationObserver = new MutationObserver((mutations) => {
+    let shouldScan = false;
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (node.matches?.('#chat .mes') || node.querySelector?.('#chat .mes, .mes[mesid]')) {
+          shouldScan = true;
+          break;
+        }
+      }
+      if (shouldScan) break;
+    }
+    if (shouldScan) scanExistingMessages();
+  });
+  chatMutationObserver.observe(document.body, { childList: true, subtree: true });
+}
+
 /**
- * 在每条角色消息左上角添加紧凑的扬声器图标。
+ * 在每条角色消息内容卡片左上角添加紧凑扬声器图标。
+ * 优先挂载到 .mes_block（实际消息卡片），而不是外层 .mes（头像/消息布局容器）。
  */
 export function addFloorButton(messageId) {
-  const mes = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+  const id = String(messageId);
+  const mes = Array.from(document.querySelectorAll('#chat .mes[mesid]'))
+    .find((item) => item.getAttribute('mesid') === id);
   if (!mes || mes.getAttribute('is_user') === 'true') return;
   if (mes.querySelector('.bilingual-tts-floor-btn')) return;
+
+  const target = mes.querySelector('.mes_block') || mes;
+  if (getComputedStyle(target).position === 'static') target.style.position = 'relative';
 
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -183,7 +209,7 @@ export function addFloorButton(messageId) {
   btn.addEventListener('click', async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (processingMessages.has(String(messageId))) {
+    if (processingMessages.has(id)) {
       showToast('这一层正在处理中，请稍候', 'info');
       return;
     }
@@ -191,7 +217,7 @@ export function addFloorButton(messageId) {
     btn.classList.add('bilingual-tts-loading');
     btn.title = '正在提取与合成…';
     try {
-      await processMessage(messageId, btn);
+      await processMessage(id, btn);
     } catch (err) {
       console.error(`[${MODULE_NAME}] Manual trigger error:`, err);
       logDiagnostic('楼层处理失败', err.message || String(err), 'error');
@@ -199,61 +225,14 @@ export function addFloorButton(messageId) {
     } finally {
       btn.disabled = false;
       btn.classList.remove('bilingual-tts-loading');
-      const currentMessage = getContext().chat?.[messageId];
-      const cacheKey = `${messageId}::${currentMessage?.mes || currentMessage?.text || ''}::${extension_settings[MODULE_NAME].speaker_filter || ''}`;
+      const currentMessage = getContext().chat?.[Number(id)] || getContext().chat?.[id];
+      const cacheKey = `${id}::${currentMessage?.mes || currentMessage?.text || ''}::${extension_settings[MODULE_NAME].speaker_filter || ''}`;
       btn.classList.toggle('bilingual-tts-done', processedMessageLines.has(cacheKey));
       btn.title = processedMessageLines.has(cacheKey) ? '已提取过；再次点击可播放缓存台词' : '提取并朗读本楼层台词';
     }
   });
 
-  const header = mes.querySelector('.mes_header') || mes.querySelector('.mes_block .mes_header') || mes;
-  header.appendChild(btn);
-}
-
-/**
- * 在酒馆底部输入栏上方注入快捷入口按钮
- */
-function injectBottomBarButton() {
-  if (document.getElementById('bilingual-tts-bottom-launcher')) return true;
-
-  // 优先作为输入框上方的独立一行插入，避免塞进 form 后被布局挤掉
-  const formSheld = document.querySelector('#form_sheld');
-  const sendForm = document.querySelector('#send_form');
-  if (!formSheld && !sendForm) return false;
-
-  const launcher = document.createElement('div');
-  launcher.id = 'bilingual-tts-bottom-launcher';
-  launcher.className = 'bilingual-tts-launcher-row';
-  launcher.innerHTML = `
-    <button type="button" class="bilingual-tts-bar-button"
-      title="双语台词 MiniMax TTS 设置与控制台"
-      aria-label="打开双语台词 MiniMax TTS 设置">
-      <span class="bilingual-icon">🎙️</span>
-      <span class="bilingual-badge" id="bilingual-tts-status-badge">TTS</span>
-    </button>
-  `;
-
-  launcher.querySelector('button').addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleDrawerSettings();
-  });
-
-  if (formSheld) {
-    formSheld.insertBefore(launcher, sendForm || formSheld.firstChild);
-  } else {
-    sendForm.insertBefore(launcher, sendForm.firstChild);
-  }
-  return true;
-}
-
-function observeBottomBar() {
-  if (document.getElementById('bilingual-tts-bottom-launcher')) return;
-  const observer = new MutationObserver(() => {
-    if (injectBottomBarButton()) observer.disconnect();
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-  setTimeout(() => observer.disconnect(), 15000);
+  target.appendChild(btn);
 }
 
 /**

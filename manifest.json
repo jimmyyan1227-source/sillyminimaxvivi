@@ -6,8 +6,8 @@
   "js": "index.js",
   "css": "style.css",
   "author": "SillyTavern Specialist",
-  "version": "1.0.4",
-  "description": "修复楼层图标触发与配置保存；增加处理去重、音频缓存及可见诊断日志。支持 AI/正则提取与 MiniMax 顺序语音播放。",
+  "version": "1.0.6",
+  "description": "移除底部 TTS 快捷入口；通过聊天楼层扫描与 DOM 监听确保每条角色消息卡片左上角显示小型扬声器按钮。保留配置持久化、去重缓存与诊断日志。",
   "hooks": {
     "activate": "init"
   }
