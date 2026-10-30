@@ -90,8 +90,9 @@ export async function init() {
   await loadStyles();
   await initSettingsUI();
 
-  // 注入底部栏快捷按钮
+  // 注入底部栏快捷按钮（兼容酒馆不同版本的输入栏结构）
   injectBottomBarButton();
+  observeBottomBar();
 
   // 注入字幕条
   injectSubtitleOverlay();
@@ -196,29 +197,46 @@ export function addFloorButton(messageId) {
  * 在酒馆底部输入栏上方注入快捷入口按钮
  */
 function injectBottomBarButton() {
-  if (document.getElementById('bilingual-tts-bottom-launcher')) return;
+  if (document.getElementById('bilingual-tts-bottom-launcher')) return true;
 
-  // 尝试插入到 #chat-tools 或 #form_sheld
-  const targetBar = document.querySelector('#chat-tools') || 
-                    document.querySelector('#form_sheld') || 
-                    document.querySelector('#send_form');
+  // 优先作为输入框上方的独立一行插入，避免塞进 form 后被布局挤掉
+  const formSheld = document.querySelector('#form_sheld');
+  const sendForm = document.querySelector('#send_form');
+  if (!formSheld && !sendForm) return false;
 
-  if (!targetBar) return;
-
-  const quickBtn = document.createElement('div');
-  quickBtn.id = 'bilingual-tts-bottom-launcher';
-  quickBtn.className = 'bilingual-tts-bar-button';
-  quickBtn.title = '双语台词 MiniMax TTS 设置与控制台';
-  quickBtn.innerHTML = `
-    <span class="bilingual-icon">🎙️</span>
-    <span class="bilingual-badge" id="bilingual-tts-status-badge">TTS</span>
+  const launcher = document.createElement('div');
+  launcher.id = 'bilingual-tts-bottom-launcher';
+  launcher.className = 'bilingual-tts-launcher-row';
+  launcher.innerHTML = `
+    <button type="button" class="bilingual-tts-bar-button"
+      title="双语台词 MiniMax TTS 设置与控制台"
+      aria-label="打开双语台词 MiniMax TTS 设置">
+      <span class="bilingual-icon">🎙️</span>
+      <span class="bilingual-badge" id="bilingual-tts-status-badge">TTS</span>
+    </button>
   `;
 
-  quickBtn.addEventListener('click', () => {
+  launcher.querySelector('button').addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     toggleDrawerSettings();
   });
 
-  targetBar.prepend(quickBtn);
+  if (formSheld) {
+    formSheld.insertBefore(launcher, sendForm || formSheld.firstChild);
+  } else {
+    sendForm.insertBefore(launcher, sendForm.firstChild);
+  }
+  return true;
+}
+
+function observeBottomBar() {
+  if (document.getElementById('bilingual-tts-bottom-launcher')) return;
+  const observer = new MutationObserver(() => {
+    if (injectBottomBarButton()) observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), 15000);
 }
 
 /**
@@ -710,27 +728,62 @@ async function initSettingsUI() {
     }
   }
 
-  const container = document.getElementById('extensions_settings');
-  if (container && html) {
+  if (!html) {
+    console.error(`[${MODULE_NAME}] Settings template is empty; settings panel was not mounted.`);
+    return;
+  }
+
+  const mount = () => {
+    // SillyTavern 当前扩展设置模板的标准挂载点是 #extensions_settings2
+    const container = document.querySelector('#extensions_settings2')
+      || document.querySelector('#extensions_settings');
+    if (!container) return false;
+    if (document.getElementById('bilingual-tts-extension-settings-wrapper')) return true;
+
     const wrapper = document.createElement('div');
     wrapper.id = 'bilingual-tts-extension-settings-wrapper';
     wrapper.innerHTML = html;
     container.appendChild(wrapper);
     bindSettingsEvents();
-  }
+    return true;
+  };
+
+  if (mount()) return;
+
+  // 设置抽屉稍后才创建时，等它出现再挂载
+  const observer = new MutationObserver(() => {
+    if (mount()) observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), 15000);
 }
 
 /**
  * 展开/收起酒馆右侧抽屉设置
  */
 export function toggleDrawerSettings() {
-  const rightPanel = document.getElementById('right-nav-panel');
-  if (rightPanel) {
-    // 模拟触发打开抽屉
-    const extensionsBtn = document.querySelector('#nav-toggle-extensions') || document.querySelector('[data-drawer="extensions"]');
-    if (extensionsBtn) extensionsBtn.click();
+  const extensionsBtn = document.querySelector(
+    '#extensions_button, #nav-toggle-extensions, [data-drawer="extensions"]'
+  );
+  const settingsPanel = document.querySelector('#extensions_settings2')
+    || document.querySelector('#extensions_settings');
+  const panelVisible = settingsPanel && settingsPanel.getClientRects().length > 0;
+
+  if (!panelVisible && extensionsBtn) extensionsBtn.click();
+
+  // 等抽屉动画完成后，将插件设置项滚动到可视区域
+  setTimeout(() => {
+    const wrapper = document.getElementById('bilingual-tts-extension-settings-wrapper');
+    if (!wrapper) return;
+    const content = wrapper.querySelector('.inline-drawer-content');
+    const toggle = wrapper.querySelector('.inline-drawer-toggle');
+    if (content && toggle && !content.classList.contains('open')) toggle.click();
+    wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 350);
+
+  if (!extensionsBtn && !settingsPanel) {
+    showToast('暂时找不到酒馆扩展设置面板，请刷新页面后重试', 'warning');
   }
-  showToast('已打开双语台词 MiniMax TTS 插件面板', 'info');
 }
 
 /**
