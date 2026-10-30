@@ -1,7 +1,7 @@
 <div class="bilingual-tts-settings">
   <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
-      <b>🎙️ 双语台词提取与 MiniMax TTS 朗读</b>
+      <b>双语台词提取与 MiniMax TTS 朗读</b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
     </div>
     <div class="inline-drawer-content" style="font-size: 0.9em; padding: 10px;">
@@ -55,7 +55,7 @@
 
       <!-- 模式 A：廉价 AI 接口配置 -->
       <div class="bilingual-section" id="bilingual-ai-config-section">
-        <h4 style="margin: 8px 0; color: #a5b4fc;">🤖 AI 提取模型配置 (OpenAI 兼容)</h4>
+        <h4 style="margin: 8px 0; color: #a5b4fc;">AI 提取模型配置 (OpenAI 兼容)</h4>
         
         <div class="bilingual-form-group">
           <label>API 基础地址 (Base URL):</label>
@@ -89,7 +89,7 @@
 
       <!-- 模式 B：正则配置 -->
       <div class="bilingual-section" id="bilingual-regex-config-section">
-        <h4 style="margin: 8px 0; color: #6ee7b7;">🔍 正则表达式配置</h4>
+        <h4 style="margin: 8px 0; color: #6ee7b7;">正则表达式配置</h4>
         <div class="bilingual-form-group">
           <label>台词与翻译匹配规则：</label>
           <input type="text" id="bilingual-regex-pattern" class="text_pole" value='["“]([\s\S]*?)(?:\s*[（(]([^()（）]+)[）)])?["”]\s*(?:[（(]([^()（）]+)[）)])?' />
@@ -101,7 +101,7 @@
 
       <!-- MiniMax TTS 配置 -->
       <div class="bilingual-section">
-        <h4 style="margin: 8px 0; color: #f472b6;">🔊 MiniMax 语音合成配置</h4>
+        <h4 style="margin: 8px 0; color: #f472b6;">MiniMax 语音合成配置</h4>
 
         <div class="bilingual-form-group">
           <label>MiniMax API Key:</label>
@@ -115,11 +115,8 @@
 
         <div class="bilingual-form-group">
           <label>TTS 模型 (Model):</label>
-          <select id="bilingual-minimax-model" class="text_pole">
-            <option value="speech-01-turbo">speech-01-turbo (速度极快，推荐)</option>
-            <option value="speech-01-hd">speech-01-hd (高保真音质)</option>
-            <option value="speech-02">speech-02 (最新多语种大模型)</option>
-          </select>
+          <input type="text" id="bilingual-minimax-model" class="text_pole" placeholder="自行填写 MiniMax TTS 模型名称" />
+          <small class="notes">直接填写你要调用的 TTS 模型 ID，不再限制为预设选项。</small>
         </div>
 
         <div class="bilingual-form-group">

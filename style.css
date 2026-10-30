@@ -1,52 +1,187 @@
 /**
  * SillyTavern Extension Styles: Bilingual Dialog MiniMax TTS
+ * The chat message DOM remains untouched; launcher and player are independent overlays.
  */
 
-/* 1. 每层消息左上角的小型扬声器图标（不占单独一行） */
-#chat .mes .mes_block { position: relative; }
-.bilingual-tts-floor-btn {
-  position: absolute;
-  top: 7px;
-  left: 7px;
-  right: auto;
-  z-index: 1000;
+/* 1. 独立朗读悬浮球与楼层选择器 */
+#bilingual-tts-floating-root {
+  position: fixed;
+  right: 18px;
+  bottom: 112px;
+  z-index: 10020;
+  pointer-events: none;
+  font-family: inherit;
+}
+
+.bilingual-tts-floating-ball {
   pointer-events: auto;
-  display: inline-flex;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 43px;
+  height: 43px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .50);
+  color: rgba(70, 76, 84, .88);
+  background: rgba(218, 221, 224, .62);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
+  box-shadow: 0 5px 18px rgba(31, 36, 43, .20), inset 0 1px 0 rgba(255,255,255,.62);
+  cursor: pointer;
+  transition: background .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+
+.bilingual-tts-floating-ball:hover {
+  background: rgba(235, 237, 239, .82);
+  transform: translateY(-1px);
+  box-shadow: 0 7px 22px rgba(31, 36, 43, .24), inset 0 1px 0 rgba(255,255,255,.76);
+}
+
+.bilingual-tts-floating-ball svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bilingual-tts-floor-picker {
+  position: absolute;
+  right: 0;
+  bottom: 54px;
+  display: none;
+  flex-direction: column;
+  width: min(310px, calc(100vw - 36px));
+  max-height: min(56vh, 440px);
+  overflow: hidden;
+  pointer-events: auto;
+  color: rgba(245, 246, 248, .94);
+  background: rgba(54, 59, 68, .76);
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 15px;
+  -webkit-backdrop-filter: blur(24px) saturate(155%);
+  backdrop-filter: blur(24px) saturate(155%);
+  box-shadow: 0 12px 36px rgba(20, 24, 31, .28), inset 0 1px 0 rgba(255,255,255,.16);
+}
+
+.bilingual-tts-floor-picker.open { display: flex; }
+
+.bilingual-tts-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 12px 9px 14px;
+  border-bottom: 1px solid rgba(235, 238, 242, .15);
+  color: rgba(247, 248, 250, .94);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.bilingual-tts-picker-header button {
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 25px;
   height: 25px;
-  box-sizing: border-box;
-  line-height: 1;
-  min-width: 25px;
   padding: 0;
-  margin: 0;
+  border: 1px solid rgba(230, 234, 239, .16);
   border-radius: 50%;
-  border: 1px solid rgba(120, 112, 102, 0.32);
-  background: rgba(238, 233, 225, 0.92);
-  color: #625b55;
-  box-shadow: 0 1px 3px rgba(40, 32, 24, 0.16);
+  color: rgba(226, 230, 235, .76);
+  background: rgba(210, 215, 222, .10);
   cursor: pointer;
-  opacity: .78;
-  transition: background .16s ease, color .16s ease, opacity .16s ease, transform .16s ease;
 }
-.bilingual-tts-floor-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.bilingual-tts-floor-btn:hover { opacity: 1; color: #292522; background: #fff; transform: scale(1.06); }
-.bilingual-tts-floor-btn:disabled { cursor: wait; }
-.bilingual-tts-floor-btn.bilingual-tts-loading { opacity: 1; color: #a66b20; border-color: rgba(166,107,32,.55); }
-.bilingual-tts-floor-btn.bilingual-tts-done { color: #4f8060; border-color: rgba(79,128,96,.4); }
 
-/* 3. 页面底部浮动双语字幕与控制条 */
+.bilingual-tts-picker-header button svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.bilingual-tts-floor-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+}
+
+.bilingual-tts-floor-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 9px 10px;
+  margin: 0;
+  text-align: left;
+  color: rgba(239, 241, 244, .90);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bilingual-tts-floor-option:hover,
+.bilingual-tts-floor-option:focus-visible {
+  outline: none;
+  background: rgba(220, 225, 232, .13);
+  border-color: rgba(224, 229, 235, .18);
+}
+
+.bilingual-tts-floor-option-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bilingual-tts-floor-option-top strong {
+  overflow: hidden;
+  color: rgba(249, 250, 251, .96);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bilingual-tts-floor-option-top small {
+  flex: 0 0 auto;
+  color: rgba(200, 207, 216, .72);
+  font-size: 10px;
+}
+
+.bilingual-tts-floor-option-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(211, 216, 224, .72);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.bilingual-tts-picker-empty {
+  padding: 22px 12px;
+  color: rgba(220, 224, 230, .70);
+  text-align: center;
+  font-size: 12px;
+}
+
+/* 2. 半透明毛玻璃双语字幕播放器 */
 .bilingual-tts-overlay {
   position: fixed;
   bottom: 85px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9999;
-  width: 90%;
-  max-width: 620px;
+  z-index: 10010;
+  width: min(90%, 620px);
   pointer-events: auto;
-  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition: opacity .25s ease, transform .25s ease;
 }
 
 .bilingual-tts-overlay.hidden {
@@ -56,134 +191,191 @@
 }
 
 .bilingual-tts-player-card {
-  background: rgba(15, 23, 42, 0.88);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.05);
-  border-radius: 12px;
-  padding: 12px 16px;
-  color: #f1f5f9;
+  color: rgba(245, 247, 250, .94);
+  background: linear-gradient(138deg, rgba(77, 82, 91, .74), rgba(37, 42, 51, .66));
+  border: 1px solid rgba(245, 247, 250, .27);
+  border-radius: 17px;
+  padding: 12px 16px 14px;
+  -webkit-backdrop-filter: blur(26px) saturate(155%);
+  backdrop-filter: blur(26px) saturate(155%);
+  box-shadow: 0 12px 32px rgba(20, 24, 31, .25), inset 0 1px 0 rgba(255,255,255,.19);
 }
 
 .bilingual-tts-player-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  gap: 12px;
+  margin-bottom: 9px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(235, 239, 244, .16);
 }
 
 .bilingual-tts-speaker-tag {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  min-width: 0;
+  color: rgba(229, 234, 241, .92);
   font-size: 12px;
   font-weight: 600;
-  color: #93c5fd;
+}
+
+.bilingual-tts-speaker-tag #bilingual-tts-speaker-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bilingual-tts-speaker-tag .speaker-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
   border-radius: 50%;
-  background-color: #3b82f6;
+  background: rgba(190, 198, 209, .88);
+  box-shadow: 0 0 0 3px rgba(210, 216, 225, .10);
 }
 
 .bilingual-tts-queue-counter {
+  margin-left: 2px;
+  color: rgba(206, 213, 222, .68);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: #94a3b8;
-  font-family: monospace;
-  margin-left: 4px;
 }
 
 .bilingual-tts-player-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 .bilingual-tts-player-actions button {
-  background: transparent;
-  border: 1px solid transparent;
-  color: #cbd5e1;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: rgba(222, 227, 234, .78);
+  background: rgba(215, 220, 228, .09);
+  border: 1px solid rgba(225, 230, 237, .16);
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
 }
 
 .bilingual-tts-player-actions button:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
+  color: rgba(250, 251, 252, .98);
+  background: rgba(226, 231, 238, .19);
+  border-color: rgba(232, 236, 242, .30);
+}
+
+.bilingual-tts-player-actions button svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bilingual-tts-player-actions button:focus-visible,
+.bilingual-tts-floating-ball:focus-visible {
+  outline: 2px solid rgba(220, 226, 235, .8);
+  outline-offset: 2px;
 }
 
 .bilingual-tts-subtitles {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .bilingual-tts-en {
   margin: 0;
+  color: rgba(250, 251, 253, .96);
   font-size: 14px;
   font-weight: 600;
-  line-height: 1.4;
-  color: #f8fafc;
-  letter-spacing: 0.01em;
+  line-height: 1.48;
+  letter-spacing: .01em;
+  overflow-wrap: anywhere;
 }
 
 .bilingual-tts-zh {
   margin: 0;
+  color: rgba(218, 224, 232, .75);
   font-size: 12px;
-  line-height: 1.4;
-  color: #94a3b8;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
 }
 
-/* 4. 抽屉面板内部样式 */
-.bilingual-tts-settings .bilingual-form-group {
-  margin-bottom: 10px;
-}
-
+/* 3. 扩展设置面板 */
+.bilingual-tts-settings .bilingual-form-group { margin-bottom: 10px; }
 .bilingual-tts-settings label {
   display: block;
-  font-size: 12px;
-  color: #cbd5e1;
   margin-bottom: 3px;
+  color: #cbd5e1;
+  font-size: 12px;
 }
-
 .bilingual-tts-settings .checkbox_label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
 }
-
 .bilingual-divider {
-  border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
   margin: 12px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, .08);
 }
-
 .bilingual-tts-settings .notes {
   display: block;
-  font-size: 11px;
-  color: #64748b;
   margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
 }
+.bilingual-save-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+#bilingual-save-settings { min-height: 32px; padding: 5px 14px; }
+#bilingual-save-status { flex: 1; min-width: 150px; }
+.bilingual-diagnostics {
+  max-height: 190px;
+  overflow: auto;
+  margin-top: 7px;
+  padding: 7px;
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-radius: 7px;
+  background: rgba(15, 23, 42, .28);
+}
+.bilingual-log-empty { color: #64748b; font-size: 11px; }
+.bilingual-log-entry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  padding: 5px 2px;
+  border-bottom: 1px solid rgba(148, 163, 184, .10);
+  font-size: 11px;
+}
+.bilingual-log-entry:last-child { border-bottom: 0; }
+.bilingual-log-entry time { color: #64748b; font-family: monospace; }
+.bilingual-log-entry b { color: #cbd5e1; }
+.bilingual-log-entry span { grid-column: 1 / -1; color: #94a3b8; overflow-wrap: anywhere; }
+.bilingual-log-entry.error b,
+.bilingual-log-entry.error span { color: #fca5a5; }
 
-
-/* 配置保存与诊断记录 */
-.bilingual-save-row { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:12px 0; }
-#bilingual-save-settings { min-height:32px; padding:5px 14px; }
-#bilingual-save-status { flex:1; min-width:150px; }
-.bilingual-diagnostics { max-height:190px; overflow:auto; margin-top:7px; padding:7px; border:1px solid rgba(148,163,184,.18); border-radius:7px; background:rgba(15,23,42,.28); }
-.bilingual-log-empty { color:#64748b; font-size:11px; }
-.bilingual-log-entry { display:grid; grid-template-columns:auto 1fr; gap:2px 8px; padding:5px 2px; border-bottom:1px solid rgba(148,163,184,.10); font-size:11px; }
-.bilingual-log-entry:last-child { border-bottom:0; }
-.bilingual-log-entry time { color:#64748b; font-family:monospace; }
-.bilingual-log-entry b { color:#cbd5e1; }
-.bilingual-log-entry span { grid-column:1 / -1; color:#94a3b8; overflow-wrap:anywhere; }
-.bilingual-log-entry.error b, .bilingual-log-entry.error span { color:#fca5a5; }
+@media (max-width: 520px) {
+  #bilingual-tts-floating-root { right: 12px; bottom: 104px; }
+  .bilingual-tts-overlay { bottom: 76px; width: calc(100% - 28px); }
+  .bilingual-tts-player-card { padding: 10px 12px 12px; }
+  .bilingual-tts-player-actions { gap: 4px; }
+  .bilingual-tts-player-actions button { width: 26px; height: 26px; }
+}

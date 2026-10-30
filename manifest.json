@@ -6,8 +6,8 @@
   "js": "index.js",
   "css": "style.css",
   "author": "SillyTavern Specialist",
-  "version": "1.0.6",
-  "description": "移除底部 TTS 快捷入口；通过聊天楼层扫描与 DOM 监听确保每条角色消息卡片左上角显示小型扬声器按钮。保留配置持久化、去重缓存与诊断日志。",
+  "version": "1.0.7",
+  "description": "独立悬浮球选择朗读楼层；播放器采用半透明毛玻璃样式与灰色 SVG 控制图标；TTS 模型支持手动填写。",
   "hooks": {
     "activate": "init"
   }

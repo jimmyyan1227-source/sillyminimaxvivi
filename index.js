@@ -102,40 +102,25 @@ export async function init() {
   await loadStyles();
   await initSettingsUI();
 
-  // 清理旧版本遗留的底部 TTS 快捷入口；设置仍可从酒馆扩展设置面板打开。
+  // 清除历史版本残留的按钮，避免继续改动每条消息卡片的排版。
   document.getElementById('bilingual-tts-bottom-launcher')?.remove();
+  document.querySelectorAll('.bilingual-tts-floor-btn').forEach((button) => button.remove());
 
-  // 注入字幕条
+  // 注入独立悬浮球、楼层选择器与毛玻璃字幕播放器。
   injectSubtitleOverlay();
+  injectFloatingLauncher();
 
-  // 监听酒馆核心事件
-  // 1. 收到消息事件 (MESSAGE_RECEIVED)
+  // 收到消息时只处理自动播放，不向任何楼层 DOM 插入控件。
   eventSource.on(event_types.MESSAGE_RECEIVED, async (messageId) => {
     const settings = extension_settings[MODULE_NAME];
-    if (!settings.enabled) return;
-
-    // 为该消息渲染楼层右上角按钮
-    addFloorButton(messageId);
-
-    // 若开启了自动播放且属于 AI 角色回复
-    if (settings.auto_play) {
-      const context = getContext();
-      const message = context.chat?.[messageId];
-      if (message && !message.is_user) {
-        console.log(`[${MODULE_NAME}] Auto-processing message #${messageId}`);
-        try { await processMessage(messageId); } catch (err) { logDiagnostic(`自动处理楼层 ${messageId} 失败`, err.message || String(err), 'error'); showToast(`自动朗读失败：${err.message || err}`, 'error'); }
-      }
+    if (!settings.enabled || !settings.auto_play) return;
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    if (message && !message.is_user) {
+      console.log(`[${MODULE_NAME}] Auto-processing message #${messageId}`);
+      try { await processMessage(messageId); } catch (err) { logDiagnostic(`自动处理楼层 ${messageId} 失败`, err.message || String(err), 'error'); showToast(`自动朗读失败：${err.message || err}`, 'error'); }
     }
   });
-
-  // 2. 消息渲染事件 (CHARACTER_MESSAGE_RENDERED)
-  eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (messageId) => {
-    addFloorButton(messageId);
-  });
-
-  // 3. 初始扫描并持续监听聊天楼层（避免消息异步渲染后漏掉图标）
-  scanExistingMessages();
-  observeChatMessages();
 
   console.log(`[${MODULE_NAME}] Extension loaded successfully.`);
 }
@@ -148,99 +133,130 @@ async function loadStyles() {
   const link = document.createElement('link');
   link.id = `${MODULE_NAME}-style`;
   link.rel = 'stylesheet';
-  link.href = `/scripts/extensions/third-party/${EXTENSION_DIR}/style.css`;
+  link.href = `/scripts/extensions/third-party/${EXTENSION_DIR}/style.css?v=1.0.7`;
   document.head.appendChild(link);
 }
 
 /**
- * 扫描页面现有楼层并追加按钮。
- * SillyTavern 有时会在扩展 init 之后才把聊天消息挂载到 #chat，
- * 因此不能只依赖一次性扫描或单一事件。
+ * 从聊天数据构建可选的角色楼层列表。
+ * 不给任何消息 DOM 增加节点，避免干扰用户自定义消息卡片美化。
  */
-function scanExistingMessages() {
-  const messages = document.querySelectorAll('#chat .mes:not([is_user="true"])');
-  messages.forEach((mes) => {
-    const messageId = mes.getAttribute('mesid');
-    if (messageId !== null && messageId !== '') addFloorButton(messageId);
+function getSpeakableMessages(limit = 30) {
+  const chat = getContext().chat || [];
+  const entries = Array.isArray(chat) ? chat.map((message, index) => [String(index), message]) : Object.entries(chat);
+  return entries
+    .filter(([, message]) => message && message.is_user !== true && message.is_user !== 'true')
+    .slice(-limit)
+    .reverse()
+    .map(([id, message]) => {
+      const raw = String(message.mes || message.text || '');
+      const preview = raw.replace(/<[^>]*>/g, ' ')
+        .replace(/\[[^\]]*\]\([^)]*\)/g, ' ')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/\s{2,}/g, ' ').trim();
+      return {
+        id,
+        floor: Number.isFinite(Number(id)) ? Number(id) + 1 : id,
+        name: String(message.name || message.character_name || '角色回复'),
+        preview: preview.slice(0, 100) || '（这条消息没有可预览的文本）',
+      };
+    });
+}
+
+/**
+ * 注入独立悬浮球与楼层选择面板。
+ * 悬浮球不属于任何聊天楼层，也不会改变消息文本容器的布局。
+ */
+function injectFloatingLauncher() {
+  if (document.getElementById('bilingual-tts-floating-root')) return;
+  const root = document.createElement('div');
+  root.id = 'bilingual-tts-floating-root';
+  root.innerHTML = `
+    <div class="bilingual-tts-floor-picker" id="bilingual-tts-floor-picker" aria-hidden="true">
+      <div class="bilingual-tts-picker-header">
+        <span>选择要朗读的楼层</span>
+        <button type="button" id="bilingual-tts-picker-close" aria-label="关闭楼层选择器" title="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="bilingual-tts-floor-list" id="bilingual-tts-floor-list"></div>
+    </div>
+    <button type="button" class="bilingual-tts-floating-ball" id="bilingual-tts-floating-ball" aria-label="选择朗读楼层" title="选择要朗读的楼层">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 9v6h4l5 4V5l-5 4h-4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/></svg>
+    </button>`;
+  document.body.appendChild(root);
+
+  const picker = root.querySelector('#bilingual-tts-floor-picker');
+  const closePicker = () => {
+    picker.classList.remove('open');
+    picker.setAttribute('aria-hidden', 'true');
+  };
+  root.querySelector('#bilingual-tts-floating-ball').addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (picker.classList.contains('open')) return closePicker();
+    renderFloorPicker();
+    picker.classList.add('open');
+    picker.setAttribute('aria-hidden', 'false');
+  });
+  root.querySelector('#bilingual-tts-picker-close').addEventListener('click', closePicker);
+  document.addEventListener('pointerdown', (event) => {
+    if (!root.contains(event.target)) closePicker();
   });
 }
 
-let chatMutationObserver = null;
-function observeChatMessages() {
-  if (chatMutationObserver || !document.body) return;
-  chatMutationObserver = new MutationObserver((mutations) => {
-    let shouldScan = false;
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        if (node.matches?.('#chat .mes') || node.querySelector?.('#chat .mes, .mes[mesid]')) {
-          shouldScan = true;
-          break;
-        }
+/** 渲染最近的角色楼层；点击某项后仅处理选中的那一楼。 */
+function renderFloorPicker() {
+  const list = document.getElementById('bilingual-tts-floor-list');
+  if (!list) return;
+  list.replaceChildren();
+  const messages = getSpeakableMessages(40);
+  if (!messages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'bilingual-tts-picker-empty';
+    empty.textContent = '当前聊天中没有可朗读的角色楼层';
+    list.appendChild(empty);
+    return;
+  }
+  messages.forEach((message) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'bilingual-tts-floor-option';
+    option.dataset.messageId = message.id;
+    const top = document.createElement('span');
+    top.className = 'bilingual-tts-floor-option-top';
+    const name = document.createElement('strong');
+    name.textContent = message.name;
+    const floor = document.createElement('small');
+    floor.textContent = `第 ${message.floor} 楼`;
+    top.append(name, floor);
+    const preview = document.createElement('span');
+    preview.className = 'bilingual-tts-floor-option-preview';
+    preview.textContent = message.preview;
+    option.append(top, preview);
+    option.addEventListener('click', async () => {
+      if (processingMessages.has(message.id)) {
+        showToast('这一层正在处理中，请稍候', 'info');
+        return;
       }
-      if (shouldScan) break;
-    }
-    if (shouldScan) scanExistingMessages();
+      const currentPicker = document.getElementById('bilingual-tts-floor-picker');
+      currentPicker?.classList.remove('open');
+      currentPicker?.setAttribute('aria-hidden', 'true');
+      try {
+        await processMessage(message.id);
+      } catch (err) {
+        console.error(`[${MODULE_NAME}] Manual floor selection error:`, err);
+        logDiagnostic(`楼层 ${message.floor} 处理失败`, err.message || String(err), 'error');
+        showToast(`该楼层处理失败：${err.message || err}`, 'error');
+      }
+    });
+    list.appendChild(option);
   });
-  chatMutationObserver.observe(document.body, { childList: true, subtree: true });
 }
 
-/**
- * 在每条角色消息内容卡片左上角添加紧凑扬声器图标。
- * 优先挂载到 .mes_block（实际消息卡片），而不是外层 .mes（头像/消息布局容器）。
- */
-export function addFloorButton(messageId) {
-  const id = String(messageId);
-  const mes = Array.from(document.querySelectorAll('#chat .mes[mesid]'))
-    .find((item) => item.getAttribute('mesid') === id);
-  if (!mes || mes.getAttribute('is_user') === 'true') return;
-  if (mes.querySelector('.bilingual-tts-floor-btn')) return;
-
-  const target = mes.querySelector('.mes_block') || mes;
-  if (getComputedStyle(target).position === 'static') target.style.position = 'relative';
-
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'bilingual-tts-floor-btn';
-  btn.title = '提取并朗读本楼层台词';
-  btn.setAttribute('aria-label', '朗读本楼层台词');
-  btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3z"></path><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"></path></svg>';
-
-  btn.addEventListener('click', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (processingMessages.has(id)) {
-      showToast('这一层正在处理中，请稍候', 'info');
-      return;
-    }
-    btn.disabled = true;
-    btn.classList.add('bilingual-tts-loading');
-    btn.title = '正在提取与合成…';
-    try {
-      await processMessage(id, btn);
-    } catch (err) {
-      console.error(`[${MODULE_NAME}] Manual trigger error:`, err);
-      logDiagnostic('楼层处理失败', err.message || String(err), 'error');
-      showToast(`本楼处理失败：${err.message || err}`, 'error');
-    } finally {
-      btn.disabled = false;
-      btn.classList.remove('bilingual-tts-loading');
-      const currentMessage = getContext().chat?.[Number(id)] || getContext().chat?.[id];
-      const cacheKey = `${id}::${currentMessage?.mes || currentMessage?.text || ''}::${extension_settings[MODULE_NAME].speaker_filter || ''}`;
-      btn.classList.toggle('bilingual-tts-done', processedMessageLines.has(cacheKey));
-      btn.title = processedMessageLines.has(cacheKey) ? '已提取过；再次点击可播放缓存台词' : '提取并朗读本楼层台词';
-    }
-  });
-
-  target.appendChild(btn);
-}
-
-/**
- * 注入页面底部浮动字幕/控制条
- */
+/** 注入独立的双语字幕播放器。 */
 function injectSubtitleOverlay() {
   if (document.getElementById('bilingual-tts-player-overlay')) return;
-
   const overlay = document.createElement('div');
   overlay.id = 'bilingual-tts-player-overlay';
   overlay.className = 'bilingual-tts-overlay hidden';
@@ -253,22 +269,18 @@ function injectSubtitleOverlay() {
           <span class="bilingual-tts-queue-counter" id="bilingual-tts-queue-counter">1/1</span>
         </div>
         <div class="bilingual-tts-player-actions">
-          <button id="bilingual-tts-prev-btn" title="上一句">⏮️</button>
-          <button id="bilingual-tts-pause-btn" title="暂停/继续">⏸️</button>
-          <button id="bilingual-tts-next-btn" title="下一句">⏭️</button>
-          <button id="bilingual-tts-stop-btn" title="停止播放">⏹️</button>
+          <button id="bilingual-tts-prev-btn" title="上一句" aria-label="上一句"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14M19 6l-9 6 9 6z"/></svg></button>
+          <button id="bilingual-tts-pause-btn" title="暂停" aria-label="暂停"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg></button>
+          <button id="bilingual-tts-next-btn" title="下一句" aria-label="下一句"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14M5 6l9 6-9 6z"/></svg></button>
+          <button id="bilingual-tts-stop-btn" title="停止播放" aria-label="停止播放"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
         </div>
       </div>
       <div class="bilingual-tts-subtitles">
         <p class="bilingual-tts-en" id="bilingual-tts-en-sub">English dialog line...</p>
         <p class="bilingual-tts-zh" id="bilingual-tts-zh-sub">中文台词翻译...</p>
       </div>
-    </div>
-  `;
-
+    </div>`;
   document.body.appendChild(overlay);
-
-  // 绑定控件
   overlay.querySelector('#bilingual-tts-stop-btn').addEventListener('click', stopAudioQueue);
   overlay.querySelector('#bilingual-tts-pause-btn').addEventListener('click', toggleAudioPause);
   overlay.querySelector('#bilingual-tts-next-btn').addEventListener('click', () => playNextInQueue());
@@ -706,10 +718,10 @@ export function toggleAudioPause() {
   const pauseBtn = document.getElementById('bilingual-tts-pause-btn');
   if (playQueue.audioElement.paused) {
     playQueue.audioElement.play();
-    if (pauseBtn) pauseBtn.textContent = '⏸️';
+    if (pauseBtn) { pauseBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg>'; pauseBtn.title = '暂停'; pauseBtn.setAttribute('aria-label', '暂停'); }
   } else {
     playQueue.audioElement.pause();
-    if (pauseBtn) pauseBtn.textContent = '▶️';
+    if (pauseBtn) { pauseBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg>'; pauseBtn.title = '继续'; pauseBtn.setAttribute('aria-label', '继续'); }
   }
 }
 
