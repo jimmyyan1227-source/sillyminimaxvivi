@@ -1,0 +1,788 @@
+/**
+ * SillyTavern Extension: Bilingual Dialog MiniMax TTS
+ * 双语台词提取与 MiniMax TTS 语音合成播放插件
+ * 
+ * 适用于 SillyTavern 1.11.x 及以上版本
+ * 安装路径: public/scripts/extensions/third-party/sillytavern-bilingual-minimax-tts/
+ */
+
+import { eventSource, event_types } from '../../../../script.js';
+import { extension_settings, renderExtensionTemplateAsync, getContext } from '../../../extensions.js';
+import { saveSettingsDebounced } from '../../../../script.js';
+
+const MODULE_NAME = 'bilingual_minimax_tts';
+
+// 动态获取当前扩展所在的文件夹名称 (兼容 GitHub Clone 任意仓库名)
+const EXTENSION_DIR = (() => {
+  try {
+    const urlParts = import.meta.url.split('/');
+    return urlParts[urlParts.length - 2] || 'sillytavern-bilingual-minimax-tts';
+  } catch {
+    return 'sillytavern-bilingual-minimax-tts';
+  }
+})();
+const DEFAULT_AI_PROMPT = `你是一个台词提取专家。请从给定的对话文本中，严格提取出所有角色的【英文原话台词】以及括号中附带的【中文翻译】。
+过滤要求：
+1. 彻底剔除所有旁白描写、动作描写（如 *...* ）、环境与心理活动。
+2. 仅保留真正的角色对白。若台词只有英文没有中文，或只有中文，也请提取并尽量补齐对应语言。
+3. 返回严格的 JSON 数组格式，不要输出任何多余的 Markdown 标记或文字：
+[
+  {
+    "character": "角色名(若未知可填 Character)",
+    "english": "英文原话",
+    "chinese": "中文翻译"
+  }
+]`;
+
+// 默认配置
+const DEFAULT_SETTINGS = {
+  enabled: true,
+  auto_play: false, // 收到新消息时是否自动提取并播放
+  extract_mode: 'ai', // 'ai' | 'regex'
+  // 廉价 AI 接口配置 (OpenAI 兼容)
+  ai_api_url: 'https://api.openai.com/v1',
+  ai_api_key: '',
+  ai_model: 'gpt-4o-mini',
+  ai_custom_prompt: DEFAULT_AI_PROMPT,
+  fallback_to_regex: true, // AI 失败时自动使用正则兜底
+  // 正则模式配置
+  regex_pattern: '["“]([^"”]+)["”]\\s*[（\\(]([^\\)）]+)[\\)）]',
+  // MiniMax TTS 配置
+  minimax_api_key: '',
+  minimax_group_id: '',
+  minimax_model: 'speech-01-turbo',
+  minimax_voice_id: 'male-qn-qingse',
+  minimax_speed: 1.0,
+  minimax_vol: 1.0,
+  minimax_pitch: 0,
+  read_target: 'english', // 'english': 仅朗读英文 | 'chinese': 仅朗读中文 | 'both': 依次朗读英文+中文
+  // UI 与播放配置
+  show_subtitle: true,
+  audio_delay_ms: 300, // 多句之间的停顿毫秒数
+};
+
+// 播放队列状态
+const playQueue = {
+  items: [],
+  currentIndex: -1,
+  isPlaying: false,
+  audioElement: null,
+  activeMessageId: null,
+};
+
+/**
+ * 初始化扩展
+ */
+export async function init() {
+  console.log(`[${MODULE_NAME}] Initializing Bilingual MiniMax TTS Extension...`);
+
+  // 初始化设置
+  extension_settings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, extension_settings[MODULE_NAME]);
+
+  // 创建单例 Audio 对象
+  if (!playQueue.audioElement) {
+    playQueue.audioElement = new Audio();
+    playQueue.audioElement.addEventListener('ended', onAudioEnded);
+    playQueue.audioElement.addEventListener('error', onAudioError);
+  }
+
+  // 加载样式与设置抽屉面板
+  await loadStyles();
+  await initSettingsUI();
+
+  // 注入底部栏快捷按钮
+  injectBottomBarButton();
+
+  // 注入字幕条
+  injectSubtitleOverlay();
+
+  // 监听酒馆核心事件
+  // 1. 收到消息事件 (MESSAGE_RECEIVED)
+  eventSource.on(event_types.MESSAGE_RECEIVED, async (messageId) => {
+    const settings = extension_settings[MODULE_NAME];
+    if (!settings.enabled) return;
+
+    // 为该消息渲染楼层右上角按钮
+    addFloorButton(messageId);
+
+    // 若开启了自动播放且属于 AI 角色回复
+    if (settings.auto_play) {
+      const context = getContext();
+      const message = context.chat?.[messageId];
+      if (message && !message.is_user) {
+        console.log(`[${MODULE_NAME}] Auto-processing message #${messageId}`);
+        await processMessage(messageId);
+      }
+    }
+  });
+
+  // 2. 消息渲染事件 (CHARACTER_MESSAGE_RENDERED)
+  eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (messageId) => {
+    addFloorButton(messageId);
+  });
+
+  // 3. 初始扫描当前界面已有消息
+  scanExistingMessages();
+
+  console.log(`[${MODULE_NAME}] Extension loaded successfully.`);
+}
+
+/**
+ * 加载自定义 CSS
+ */
+async function loadStyles() {
+  if (document.getElementById(`${MODULE_NAME}-style`)) return;
+  const link = document.createElement('link');
+  link.id = `${MODULE_NAME}-style`;
+  link.rel = 'stylesheet';
+  link.href = `/scripts/extensions/third-party/${EXTENSION_DIR}/style.css`;
+  document.head.appendChild(link);
+}
+
+/**
+ * 扫描页面现有楼层并追加按钮
+ */
+function scanExistingMessages() {
+  const messages = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+  messages.forEach((mes) => {
+    const messageId = mes.getAttribute('mesid');
+    if (messageId !== null) {
+      addFloorButton(messageId);
+    }
+  });
+}
+
+/**
+ * 在角色回复楼层右上角添加【🔊 朗读台词】按钮
+ */
+export function addFloorButton(messageId) {
+  const mes = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+  if (!mes || mes.getAttribute('is_user') === 'true') return;
+
+  // 检查是否已注入
+  if (mes.querySelector('.bilingual-tts-floor-btn')) return;
+
+  // 寻找合适挂载点：楼层右上角消息控制区或直接绝对定位在楼层右上角
+  const btn = document.createElement('button');
+  btn.className = 'bilingual-tts-floor-btn';
+  btn.title = '提取本楼台词并调用 MiniMax TTS 朗读';
+  btn.innerHTML = `<span class="bilingual-tts-icon">🔊</span><span class="bilingual-tts-text">朗读台词</span>`;
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    btn.classList.add('bilingual-tts-loading');
+    btn.innerHTML = `<span class="bilingual-tts-spinner">⏳</span><span class="bilingual-tts-text">提取中...</span>`;
+    try {
+      await processMessage(messageId, btn);
+    } catch (err) {
+      console.error(`[${MODULE_NAME}] Manual trigger error:`, err);
+      showToast(`朗读失败: ${err.message}`, 'error');
+    } finally {
+      btn.classList.remove('bilingual-tts-loading');
+      btn.innerHTML = `<span class="bilingual-tts-icon">🔊</span><span class="bilingual-tts-text">朗读台词</span>`;
+    }
+  });
+
+  // 注入到楼层顶部
+  const nameElement = mes.querySelector('.name_text') || mes.querySelector('.ch_name');
+  if (nameElement && nameElement.parentElement) {
+    nameElement.parentElement.appendChild(btn);
+  } else {
+    mes.appendChild(btn);
+  }
+}
+
+/**
+ * 在酒馆底部输入栏上方注入快捷入口按钮
+ */
+function injectBottomBarButton() {
+  if (document.getElementById('bilingual-tts-bottom-launcher')) return;
+
+  // 尝试插入到 #chat-tools 或 #form_sheld
+  const targetBar = document.querySelector('#chat-tools') || 
+                    document.querySelector('#form_sheld') || 
+                    document.querySelector('#send_form');
+
+  if (!targetBar) return;
+
+  const quickBtn = document.createElement('div');
+  quickBtn.id = 'bilingual-tts-bottom-launcher';
+  quickBtn.className = 'bilingual-tts-bar-button';
+  quickBtn.title = '双语台词 MiniMax TTS 设置与控制台';
+  quickBtn.innerHTML = `
+    <span class="bilingual-icon">🎙️</span>
+    <span class="bilingual-badge" id="bilingual-tts-status-badge">TTS</span>
+  `;
+
+  quickBtn.addEventListener('click', () => {
+    toggleDrawerSettings();
+  });
+
+  targetBar.prepend(quickBtn);
+}
+
+/**
+ * 注入页面底部浮动字幕/控制条
+ */
+function injectSubtitleOverlay() {
+  if (document.getElementById('bilingual-tts-player-overlay')) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'bilingual-tts-player-overlay';
+  overlay.className = 'bilingual-tts-overlay hidden';
+  overlay.innerHTML = `
+    <div class="bilingual-tts-player-card">
+      <div class="bilingual-tts-player-header">
+        <div class="bilingual-tts-speaker-tag">
+          <span class="speaker-dot"></span>
+          <span id="bilingual-tts-speaker-name">Character</span>
+          <span class="bilingual-tts-queue-counter" id="bilingual-tts-queue-counter">1/1</span>
+        </div>
+        <div class="bilingual-tts-player-actions">
+          <button id="bilingual-tts-prev-btn" title="上一句">⏮️</button>
+          <button id="bilingual-tts-pause-btn" title="暂停/继续">⏸️</button>
+          <button id="bilingual-tts-next-btn" title="下一句">⏭️</button>
+          <button id="bilingual-tts-stop-btn" title="停止播放">⏹️</button>
+        </div>
+      </div>
+      <div class="bilingual-tts-subtitles">
+        <p class="bilingual-tts-en" id="bilingual-tts-en-sub">English dialog line...</p>
+        <p class="bilingual-tts-zh" id="bilingual-tts-zh-sub">中文台词翻译...</p>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // 绑定控件
+  overlay.querySelector('#bilingual-tts-stop-btn').addEventListener('click', stopAudioQueue);
+  overlay.querySelector('#bilingual-tts-pause-btn').addEventListener('click', toggleAudioPause);
+  overlay.querySelector('#bilingual-tts-next-btn').addEventListener('click', () => playNextInQueue());
+  overlay.querySelector('#bilingual-tts-prev-btn').addEventListener('click', () => playPrevInQueue());
+}
+
+/**
+ * 核心流程：处理单楼层消息
+ */
+export async function processMessage(messageId, triggerBtn = null) {
+  const context = getContext();
+  const message = context.chat?.[messageId];
+  if (!message) {
+    throw new Error('未找到该消息楼层数据');
+  }
+
+  const rawText = message.mes || message.text || '';
+  if (!rawText.trim()) {
+    showToast('消息文本为空', 'warning');
+    return;
+  }
+
+  const settings = extension_settings[MODULE_NAME];
+
+  // 1. 台词提取
+  let lines = [];
+  if (settings.extract_mode === 'ai') {
+    if (triggerBtn) triggerBtn.querySelector('.bilingual-tts-text').textContent = 'AI 提取中...';
+    try {
+      lines = await extractWithAI(rawText, message.name || 'Character');
+    } catch (err) {
+      console.warn(`[${MODULE_NAME}] AI 提取失败:`, err);
+      if (settings.fallback_to_regex) {
+        showToast('AI 提取失败，自动使用正则纯提取兜底', 'warning');
+        lines = extractWithRegex(rawText, message.name || 'Character');
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    // 纯正则模式
+    if (triggerBtn) triggerBtn.querySelector('.bilingual-tts-text').textContent = '正则提取中...';
+    lines = extractWithRegex(rawText, message.name || 'Character');
+  }
+
+  if (!lines || lines.length === 0) {
+    showToast('未检测到符合条件的双语台词', 'info');
+    return;
+  }
+
+  console.log(`[${MODULE_NAME}] Extracted ${lines.length} dialog lines:`, lines);
+  showToast(`成功提取 ${lines.length} 句台词，开始排队合成与朗读`, 'success');
+
+  // 2. 压入 MiniMax 语音播放队列
+  enqueueLines(lines, messageId);
+}
+
+/**
+ * 模块一【模式 A】：廉价 AI 智能提取
+ */
+export async function extractWithAI(rawText, defaultCharName = 'Character') {
+  const settings = extension_settings[MODULE_NAME];
+  if (!settings.ai_api_key) {
+    throw new Error('请先在插件抽屉中配置 AI API Key');
+  }
+
+  const cleanBaseUrl = settings.ai_api_url.replace(/\/+$/, '');
+  const endpoint = `${cleanBaseUrl}/chat/completions`;
+
+  const messages = [
+    { role: 'system', content: settings.ai_custom_prompt || DEFAULT_AI_PROMPT },
+    { role: 'user', content: `角色名称: ${defaultCharName}\n文本内容:\n${rawText}` }
+  ];
+
+  const payload = {
+    model: settings.ai_model || 'gpt-4o-mini',
+    messages,
+    temperature: 0.1,
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${settings.ai_api_key}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API 错误 (${response.status}): ${errorText.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error('AI 返回内容为空');
+  }
+
+  // 清洗可能存在的 Markdown ```json 语法块
+  const jsonStr = content.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (!Array.isArray(parsed)) {
+      if (typeof parsed === 'object') {
+        // 如果返回了形如 { dialogs: [...] }
+        const key = Object.keys(parsed).find(k => Array.isArray(parsed[k]));
+        if (key) return parsed[key];
+      }
+      throw new Error('AI 返回结果非数组');
+    }
+    return parsed.map(item => ({
+      character: item.character || defaultCharName,
+      english: (item.english || '').trim(),
+      chinese: (item.chinese || '').trim(),
+    })).filter(item => item.english || item.chinese);
+  } catch (err) {
+    console.error(`[${MODULE_NAME}] JSON 解析失败:`, content);
+    throw new Error(`台词 JSON 解析失败: ${err.message}`);
+  }
+}
+
+/**
+ * 模块一【模式 B】：正则纯提取（备用/省流模式）
+ * 匹配引号内容，以及其紧接着括号中的中文内容，例如: "Hello." (你好。)
+ */
+export function extractWithRegex(rawText, defaultCharName = 'Character') {
+  const lines = [];
+
+  // 支持英文引号 "..." 与中文双引号 “...”
+  // 紧随其后的英文括号 (...) 或中文括号（...）
+  const regex = /["“]([^"”]+)["”]\s*[（\(]([^\)）]+)[\)）]/g;
+
+  let match;
+  while ((match = regex.exec(rawText)) !== null) {
+    const speech = match[1].trim();
+    const translation = match[2].trim();
+
+    // 简单判断哪部分是英文/中文
+    const hasEnglishInQuote = /[a-zA-Z]{2,}/.test(speech);
+    const hasChineseInBracket = /[\u4e00-\u9fa5]/.test(translation);
+
+    if (hasEnglishInQuote && hasChineseInBracket) {
+      lines.push({
+        character: defaultCharName,
+        english: speech,
+        chinese: translation,
+      });
+    } else {
+      // 容错：如果两边都有内容直接保留
+      lines.push({
+        character: defaultCharName,
+        english: speech,
+        chinese: translation,
+      });
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * 模块二：MiniMax TTS 请求
+ * 支持 MiniMax T2A v2 / Pro 接口
+ */
+export async function requestMiniMaxTTS(textToRead) {
+  const settings = extension_settings[MODULE_NAME];
+  if (!settings.minimax_api_key || !settings.minimax_group_id) {
+    throw new Error('请在插件设置中配置 MiniMax API Key 与 Group ID');
+  }
+
+  const url = `https://api.minimax.chat/v1/t2a_v2?GroupId=${settings.minimax_group_id}`;
+
+  const payload = {
+    model: settings.minimax_model || 'speech-01-turbo',
+    text: textToRead,
+    stream: false,
+    voice_setting: {
+      voice_id: settings.minimax_voice_id || 'male-qn-qingse',
+      speed: Number(settings.minimax_speed) || 1.0,
+      vol: Number(settings.minimax_vol) || 1.0,
+      pitch: Number(settings.minimax_pitch) || 0,
+    },
+    audio_setting: {
+      sample_rate: 32000,
+      bitrate: 128000,
+      format: 'mp3',
+      channel: 1
+    }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${settings.minimax_api_key}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`MiniMax HTTP 错误 (${response.status}): ${errorText.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  if (data.base_resp && data.base_resp.status_code !== 0) {
+    throw new Error(`MiniMax 错误 [${data.base_resp.status_code}]: ${data.base_resp.status_msg}`);
+  }
+
+  // MiniMax 返回音频数据可能是 Hex 字符串或者 Base64，或者 audio_url
+  const audioHex = data.data?.audio;
+  const audioUrl = data.data?.audio_url;
+
+  if (audioUrl) {
+    return audioUrl;
+  }
+
+  if (audioHex) {
+    return hexOrBase64ToAudioUrl(audioHex);
+  }
+
+  throw new Error('MiniMax 响应中未找到有效音频数据');
+}
+
+/**
+ * Hex 编码或 Base64 转 Audio Blob Object URL
+ */
+function hexOrBase64ToAudioUrl(str) {
+  // 检查是否为 Hex 字符 (只含 0-9a-fA-F)
+  const isHex = /^[0-9a-fA-F]+$/.test(str.slice(0, 100));
+
+  if (isHex) {
+    const cleanHex = str.replace(/^0x/, '');
+    const len = cleanHex.length;
+    const bytes = new Uint8Array(len / 2);
+    for (let i = 0; i < len; i += 2) {
+      bytes[i / 2] = parseInt(cleanHex.substr(i, 2), 16);
+    }
+    const blob = new Blob([bytes], { type: 'audio/mp3' });
+    return URL.createObjectURL(blob);
+  } else {
+    // 视为 Base64
+    const binary = atob(str);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'audio/mp3' });
+    return URL.createObjectURL(blob);
+  }
+}
+
+/**
+ * 将台词放入播放队列并启动顺序合成与播放
+ */
+export function enqueueLines(lines, messageId) {
+  const settings = extension_settings[MODULE_NAME];
+
+  // 构建待播项目
+  const newItems = lines.map((line, idx) => {
+    let speechText = '';
+    if (settings.read_target === 'english') {
+      speechText = line.english || line.chinese;
+    } else if (settings.read_target === 'chinese') {
+      speechText = line.chinese || line.english;
+    } else {
+      // 英文 + 中文双读
+      speechText = `${line.english}。${line.chinese}`;
+    }
+
+    return {
+      index: idx,
+      character: line.character,
+      english: line.english,
+      chinese: line.chinese,
+      speechText,
+      audioUrl: null,
+      status: 'pending', // 'pending' | 'synthesizing' | 'ready' | 'playing' | 'done' | 'error'
+      error: null,
+    };
+  });
+
+  // 停止当前正在播放的旧队列
+  stopAudioQueue();
+
+  playQueue.items = newItems;
+  playQueue.currentIndex = -1;
+  playQueue.activeMessageId = messageId;
+
+  // 显示字幕浮层
+  if (settings.show_subtitle) {
+    const overlay = document.getElementById('bilingual-tts-player-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+  }
+
+  // 播放队列第一项
+  playNextInQueue();
+}
+
+/**
+ * 播放队列中的下一项
+ */
+export async function playNextInQueue() {
+  if (playQueue.currentIndex + 1 >= playQueue.items.length) {
+    console.log(`[${MODULE_NAME}] All dialogs finished playing.`);
+    playQueue.isPlaying = false;
+    updateSubtitleUI(null, '播放完毕');
+    setTimeout(() => {
+      const overlay = document.getElementById('bilingual-tts-player-overlay');
+      if (overlay) overlay.classList.add('hidden');
+    }, 2000);
+    return;
+  }
+
+  playQueue.currentIndex += 1;
+  const currentItem = playQueue.items[playQueue.currentIndex];
+  playQueue.isPlaying = true;
+
+  // 更新字幕 UI 为合成中状态
+  updateSubtitleUI(currentItem, 'MiniMax 语音合成中...');
+
+  try {
+    currentItem.status = 'synthesizing';
+    // 若未缓存音频 URL，发起合成请求
+    if (!currentItem.audioUrl) {
+      currentItem.audioUrl = await requestMiniMaxTTS(currentItem.speechText);
+    }
+
+    currentItem.status = 'playing';
+    updateSubtitleUI(currentItem, '正在播放');
+
+    // 播放音频
+    playQueue.audioElement.src = currentItem.audioUrl;
+    await playQueue.audioElement.play();
+  } catch (err) {
+    console.error(`[${MODULE_NAME}] Playback error at item #${playQueue.currentIndex}:`, err);
+    currentItem.status = 'error';
+    currentItem.error = err.message;
+    showToast(`台词合成失败: ${err.message}`, 'error');
+    // 出错后自动尝试播放下一句
+    setTimeout(() => playNextInQueue(), 1500);
+  }
+}
+
+/**
+ * 播放队列上一句
+ */
+export function playPrevInQueue() {
+  if (playQueue.currentIndex > 0) {
+    playQueue.currentIndex -= 2;
+    playNextInQueue();
+  }
+}
+
+/**
+ * 音频播放结束回调
+ */
+function onAudioEnded() {
+  const currentItem = playQueue.items[playQueue.currentIndex];
+  if (currentItem) currentItem.status = 'done';
+
+  const settings = extension_settings[MODULE_NAME];
+  const delay = Number(settings.audio_delay_ms) || 300;
+
+  setTimeout(() => {
+    playNextInQueue();
+  }, delay);
+}
+
+/**
+ * 音频播放失败回调
+ */
+function onAudioError(e) {
+  console.error(`[${MODULE_NAME}] HTML5 Audio error:`, e);
+  showToast('音频播放异常，跳到下一句', 'warning');
+  setTimeout(() => playNextInQueue(), 1000);
+}
+
+/**
+ * 暂停 / 继续播放
+ */
+export function toggleAudioPause() {
+  if (!playQueue.audioElement) return;
+
+  const pauseBtn = document.getElementById('bilingual-tts-pause-btn');
+  if (playQueue.audioElement.paused) {
+    playQueue.audioElement.play();
+    if (pauseBtn) pauseBtn.textContent = '⏸️';
+  } else {
+    playQueue.audioElement.pause();
+    if (pauseBtn) pauseBtn.textContent = '▶️';
+  }
+}
+
+/**
+ * 停止当前播放并清空队列
+ */
+export function stopAudioQueue() {
+  if (playQueue.audioElement) {
+    playQueue.audioElement.pause();
+    playQueue.audioElement.currentTime = 0;
+  }
+  playQueue.isPlaying = false;
+  playQueue.items = [];
+  playQueue.currentIndex = -1;
+
+  const overlay = document.getElementById('bilingual-tts-player-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+/**
+ * 更新悬浮字幕与控制面板信息
+ */
+function updateSubtitleUI(item, statusText = '') {
+  const overlay = document.getElementById('bilingual-tts-player-overlay');
+  if (!overlay) return;
+
+  if (!item) {
+    const enSub = document.getElementById('bilingual-tts-en-sub');
+    const zhSub = document.getElementById('bilingual-tts-zh-sub');
+    if (enSub) enSub.textContent = '';
+    if (zhSub) zhSub.textContent = statusText;
+    return;
+  }
+
+  const speakerName = document.getElementById('bilingual-tts-speaker-name');
+  const counter = document.getElementById('bilingual-tts-queue-counter');
+  const enSub = document.getElementById('bilingual-tts-en-sub');
+  const zhSub = document.getElementById('bilingual-tts-zh-sub');
+
+  if (speakerName) speakerName.textContent = item.character || 'Character';
+  if (counter) counter.textContent = `${item.index + 1}/${playQueue.items.length}`;
+  if (enSub) enSub.textContent = item.english || '(No English Speech)';
+  if (zhSub) zhSub.textContent = item.chinese || statusText;
+}
+
+/**
+ * 右侧抽屉设置页面初始化
+ */
+async function initSettingsUI() {
+  let html = '';
+  try {
+    html = await renderExtensionTemplateAsync(`third-party/${EXTENSION_DIR}`, 'settings');
+  } catch (e) {
+    console.warn(`[${MODULE_NAME}] Template load failed with third-party/${EXTENSION_DIR}, trying fallback:`, e);
+    try {
+      html = await renderExtensionTemplateAsync(EXTENSION_DIR, 'settings');
+    } catch (e2) {
+      console.error(`[${MODULE_NAME}] Could not load settings template:`, e2);
+    }
+  }
+
+  const container = document.getElementById('extensions_settings');
+  if (container && html) {
+    const wrapper = document.createElement('div');
+    wrapper.id = 'bilingual-tts-extension-settings-wrapper';
+    wrapper.innerHTML = html;
+    container.appendChild(wrapper);
+    bindSettingsEvents();
+  }
+}
+
+/**
+ * 展开/收起酒馆右侧抽屉设置
+ */
+export function toggleDrawerSettings() {
+  const rightPanel = document.getElementById('right-nav-panel');
+  if (rightPanel) {
+    // 模拟触发打开抽屉
+    const extensionsBtn = document.querySelector('#nav-toggle-extensions') || document.querySelector('[data-drawer="extensions"]');
+    if (extensionsBtn) extensionsBtn.click();
+  }
+  showToast('已打开双语台词 MiniMax TTS 插件面板', 'info');
+}
+
+/**
+ * 绑定设置页面的输入控件与持久化存储
+ */
+function bindSettingsEvents() {
+  const settings = extension_settings[MODULE_NAME];
+
+  const bindInput = (id, key, isCheckbox = false) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (isCheckbox) {
+      el.checked = !!settings[key];
+      el.addEventListener('change', () => {
+        settings[key] = el.checked;
+        saveSettingsDebounced();
+      });
+    } else {
+      el.value = settings[key] || '';
+      el.addEventListener('input', () => {
+        settings[key] = el.value;
+        saveSettingsDebounced();
+      });
+    }
+  };
+
+  bindInput('bilingual-enabled', 'enabled', true);
+  bindInput('bilingual-auto-play', 'auto_play', true);
+  bindInput('bilingual-extract-mode', 'extract_mode');
+  bindInput('bilingual-ai-url', 'ai_api_url');
+  bindInput('bilingual-ai-key', 'ai_api_key');
+  bindInput('bilingual-ai-model', 'ai_model');
+  bindInput('bilingual-ai-prompt', 'ai_custom_prompt');
+  bindInput('bilingual-fallback-regex', 'fallback_to_regex', true);
+  bindInput('bilingual-regex-pattern', 'regex_pattern');
+  bindInput('bilingual-minimax-key', 'minimax_api_key');
+  bindInput('bilingual-minimax-group', 'minimax_group_id');
+  bindInput('bilingual-minimax-model', 'minimax_model');
+  bindInput('bilingual-minimax-voice', 'minimax_voice_id');
+  bindInput('bilingual-minimax-speed', 'minimax_speed');
+  bindInput('bilingual-minimax-vol', 'minimax_vol');
+  bindInput('bilingual-read-target', 'read_target');
+  bindInput('bilingual-show-subtitle', 'show_subtitle', true);
+}
+
+/**
+ * 简易 Toast 通知 (兼容酒馆 toastr 或自定义简易通知)
+ */
+function showToast(message, type = 'info') {
+  if (window.toastr && typeof window.toastr[type] === 'function') {
+    window.toastr[type](message, '双语台词 TTS');
+    return;
+  }
+  console.log(`[${MODULE_NAME}][${type.toUpperCase()}] ${message}`);
+}

@@ -1,0 +1,152 @@
+<div class="bilingual-tts-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b>🎙️ 双语台词提取与 MiniMax TTS 朗读</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+    </div>
+    <div class="inline-drawer-content" style="font-size: 0.9em; padding: 10px;">
+      
+      <!-- 基础功能 -->
+      <div class="bilingual-form-group">
+        <label class="checkbox_label">
+          <input type="checkbox" id="bilingual-enabled" />
+          <span>启用双语台词 TTS 插件</span>
+        </label>
+      </div>
+
+      <div class="bilingual-form-group">
+        <label class="checkbox_label">
+          <input type="checkbox" id="bilingual-auto-play" />
+          <span>收到角色新消息时自动提取并播放 (MESSAGE_RECEIVED)</span>
+        </label>
+      </div>
+
+      <div class="bilingual-form-group">
+        <label><b>朗读目标语言：</b></label>
+        <select id="bilingual-read-target" class="text_pole">
+          <option value="english">仅朗读英文原话 (English Only)</option>
+          <option value="chinese">仅朗读中文翻译 (Chinese Only)</option>
+          <option value="both">英文与中文依次连读 (Both)</option>
+        </select>
+        <small class="notes">建议选择【仅朗读英文原话】以体验纯正配音，或选择双语连读学习对照。</small>
+      </div>
+
+      <hr class="bilingual-divider" />
+
+      <!-- 提取模式切换 -->
+      <div class="bilingual-form-group">
+        <label><b>台词提取核心工作模式：</b></label>
+        <select id="bilingual-extract-mode" class="text_pole">
+          <option value="ai">【模式 A】AI 智能大模型提取 (精准过滤旁白动作，默认)</option>
+          <option value="regex">【模式 B】正则纯提取 (零成本省流/离线极速模式)</option>
+        </select>
+      </div>
+
+      <!-- 模式 A：廉价 AI 接口配置 -->
+      <div class="bilingual-section" id="bilingual-ai-config-section">
+        <h4 style="margin: 8px 0; color: #a5b4fc;">🤖 AI 提取模型配置 (OpenAI 兼容)</h4>
+        
+        <div class="bilingual-form-group">
+          <label>API 基础地址 (Base URL):</label>
+          <input type="text" id="bilingual-ai-url" class="text_pole" placeholder="https://api.openai.com/v1 或 https://api.siliconflow.cn/v1" />
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>API Key (密钥):</label>
+          <input type="password" id="bilingual-ai-key" class="text_pole" placeholder="sk-..." />
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>模型名称 (Model):</label>
+          <input type="text" id="bilingual-ai-model" class="text_pole" placeholder="gpt-4o-mini 或 deepseek-ai/DeepSeek-V3" />
+        </div>
+
+        <div class="bilingual-form-group">
+          <label class="checkbox_label">
+            <input type="checkbox" id="bilingual-fallback-regex" checked />
+            <span>AI 接口超时或解析异常时，自动无缝切换为正则模式兜底</span>
+          </label>
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>提取 Prompt 提示词模板:</label>
+          <textarea id="bilingual-ai-prompt" class="text_pole" rows="4" style="resize: vertical; font-size: 0.8em;"></textarea>
+        </div>
+      </div>
+
+      <hr class="bilingual-divider" />
+
+      <!-- 模式 B：正则配置 -->
+      <div class="bilingual-section" id="bilingual-regex-config-section">
+        <h4 style="margin: 8px 0; color: #6ee7b7;">🔍 正则表达式配置</h4>
+        <div class="bilingual-form-group">
+          <label>台词与翻译匹配正则 (Group 1: 英文, Group 2: 中文):</label>
+          <input type="text" id="bilingual-regex-pattern" class="text_pole" value='["“]([^"”]+)["”]\s*[（\(]([^\)）]+)[\)）]' />
+          <small class="notes">默认匹配格式如：<code>"Hello detective." (你好，侦探。)</code> 或 <code>“Welcome!”（欢迎！）</code></small>
+        </div>
+      </div>
+
+      <hr class="bilingual-divider" />
+
+      <!-- MiniMax TTS 配置 -->
+      <div class="bilingual-section">
+        <h4 style="margin: 8px 0; color: #f472b6;">🔊 MiniMax 语音合成配置</h4>
+
+        <div class="bilingual-form-group">
+          <label>MiniMax API Key:</label>
+          <input type="password" id="bilingual-minimax-key" class="text_pole" placeholder="从开放平台复制的 API Key" />
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>MiniMax Group ID (组织/企业ID):</label>
+          <input type="text" id="bilingual-minimax-group" class="text_pole" placeholder="如：17983..." />
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>TTS 模型 (Model):</label>
+          <select id="bilingual-minimax-model" class="text_pole">
+            <option value="speech-01-turbo">speech-01-turbo (速度极快，推荐)</option>
+            <option value="speech-01-hd">speech-01-hd (高保真音质)</option>
+            <option value="speech-02">speech-02 (最新多语种大模型)</option>
+          </select>
+        </div>
+
+        <div class="bilingual-form-group">
+          <label>音色发音人 (Voice ID):</label>
+          <input type="text" id="bilingual-minimax-voice" class="text_pole" list="bilingual-voice-presets" placeholder="选择或输入 voice_id" />
+          <datalist id="bilingual-voice-presets">
+            <option value="male-qn-qingse">青年音色 (男) - male-qn-qingse</option>
+            <option value="female-shaonv">元气少女 (女) - female-shaonv</option>
+            <option value="female-yujie">成熟御姐 (女) - female-yujie</option>
+            <option value="presenter_male">磁性播音 (男) - presenter_male</option>
+            <option value="presenter_female">优雅知性 (女) - presenter_female</option>
+            <option value="audiobook_male_2">沉稳大叔 (男) - audiobook_male_2</option>
+            <option value="Santa_Claus">欧美厚重 (男) - Santa_Claus</option>
+          </datalist>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <div class="bilingual-form-group" style="flex: 1;">
+            <label>语速 (Speed: 0.5 - 2.0):</label>
+            <input type="number" id="bilingual-minimax-speed" class="text_pole" min="0.5" max="2.0" step="0.1" value="1.0" />
+          </div>
+          <div class="bilingual-form-group" style="flex: 1;">
+            <label>音量 (Vol: 0.1 - 2.0):</label>
+            <input type="number" id="bilingual-minimax-vol" class="text_pole" min="0.1" max="2.0" step="0.1" value="1.0" />
+          </div>
+        </div>
+      </div>
+
+      <hr class="bilingual-divider" />
+
+      <!-- UI 与辅助 -->
+      <div class="bilingual-form-group">
+        <label class="checkbox_label">
+          <input type="checkbox" id="bilingual-show-subtitle" checked />
+          <span>播放时在界面底部显示悬浮双语字幕与控制器</span>
+        </label>
+      </div>
+
+    </div>
+  </div>
+</div>

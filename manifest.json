@@ -1,0 +1,11 @@
+{
+  "display_name": "双语台词提取与 MiniMax TTS 朗读 (Bilingual Dialog MiniMax TTS)",
+  "loading_order": 5,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "SillyTavern Specialist",
+  "version": "1.0.0",
+  "description": "自动或手动提取角色回复中的英文原声台词与中文翻译，支持廉价大模型提取与正则双模式，调用 MiniMax 顺序合成并排队播放。"
+}
